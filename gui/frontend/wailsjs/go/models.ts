@@ -8,11 +8,14 @@ export namespace ctrl {
 	    username: string;
 	    password: string;
 	    mode: string;
-	    ua: string;
 	    buffer_size: number;
 	    timeout: number;
 	    debug: boolean;
 	    upstream_proxy: string;
+	    redirect_url: string;
+	    raw_header: string[];
+	    disable_heartbeat: boolean;
+	    disable_gzip: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Suo5Config(source);
@@ -27,11 +30,14 @@ export namespace ctrl {
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.mode = source["mode"];
-	        this.ua = source["ua"];
 	        this.buffer_size = source["buffer_size"];
 	        this.timeout = source["timeout"];
 	        this.debug = source["debug"];
 	        this.upstream_proxy = source["upstream_proxy"];
+	        this.redirect_url = source["redirect_url"];
+	        this.raw_header = source["raw_header"];
+	        this.disable_heartbeat = source["disable_heartbeat"];
+	        this.disable_gzip = source["disable_gzip"];
 	    }
 	}
 

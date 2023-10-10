@@ -11,12 +11,14 @@ import (
 	"strings"
 )
 
+var Version = "v0.0.0"
+
 func main() {
 	log.Default.SetTimeFormat("01-02 15:04")
 	app := cli.NewApp()
 	app.Name = "suo5"
 	app.Usage = "A super http proxy tunnel"
-	app.Version = "v0.3.0"
+	app.Version = Version
 
 	defaultConfig := ctrl.DefaultSuo5Config()
 
@@ -40,6 +42,12 @@ func main() {
 			Usage:   "http request method",
 			Value:   defaultConfig.Method,
 		},
+		&cli.StringFlag{
+			Name:    "redirect",
+			Aliases: []string{"r"},
+			Usage:   "redirect to the url if host not matched, used to bypass load balance",
+			Value:   defaultConfig.RedirectURL,
+		},
 		&cli.BoolFlag{
 			Name:  "no-auth",
 			Usage: "disable socks5 authentication",
@@ -58,7 +66,12 @@ func main() {
 		&cli.StringFlag{
 			Name:  "ua",
 			Usage: "the user-agent used to send request",
-			Value: defaultConfig.UserAgent,
+			Value: "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.1.2.3",
+		},
+		&cli.StringSliceFlag{
+			Name:    "header",
+			Aliases: []string{"H"},
+			Usage:   "use extra header, ex -H 'Cookie: abc'",
 		},
 		&cli.IntFlag{
 			Name:  "timeout",
@@ -72,7 +85,7 @@ func main() {
 		},
 		&cli.StringFlag{
 			Name:  "proxy",
-			Usage: "use upstream socks5 proxy",
+			Usage: "use upstream proxy, support both socks5 and http(s), eg: socks5://127.0.0.1:7890",
 			Value: defaultConfig.UpstreamProxy,
 		},
 		&cli.BoolFlag{
@@ -80,6 +93,24 @@ func main() {
 			Aliases: []string{"d"},
 			Usage:   "debug the traffic, print more details",
 			Value:   defaultConfig.Debug,
+		},
+		&cli.BoolFlag{
+			Name:    "no-heartbeat",
+			Aliases: []string{"nh"},
+			Usage:   "disable heartbeat to the remote server which will send data every 5s",
+			Value:   defaultConfig.DisableHeartbeat,
+		},
+		&cli.BoolFlag{
+			Name:    "no-gzip",
+			Aliases: []string{"ng"},
+			Usage:   "disable gzip compression, which will improve compatibility with some old servers",
+			Value:   defaultConfig.DisableHeartbeat,
+		},
+		&cli.StringFlag{
+			Name:    "test-exit",
+			Aliases: []string{"T"},
+			Usage:   "test a real connection, if success exit(0), else exit(1)",
+			Hidden:  true,
 		},
 	}
 	app.Before = func(c *cli.Context) error {
@@ -108,6 +139,11 @@ func Action(c *cli.Context) error {
 	debug := c.Bool("debug")
 	proxy := c.String("proxy")
 	method := c.String("method")
+	redirect := c.String("redirect")
+	header := c.StringSlice("header")
+	noHeartbeat := c.Bool("no-heartbeat")
+	noGzip := c.Bool("no-gzip")
+	testExit := c.String("test-exit")
 
 	var username, password string
 	if auth == "" {
@@ -120,6 +156,7 @@ func Action(c *cli.Context) error {
 		}
 		username = parts[0]
 		password = parts[1]
+		noAuth = false
 	}
 	if !(mode == ctrl.AutoDuplex || mode == ctrl.FullDuplex || mode == ctrl.HalfDuplex) {
 		return fmt.Errorf("invalid mode, expected auto or full or half")
@@ -128,19 +165,25 @@ func Action(c *cli.Context) error {
 	if bufSize < 512 || bufSize > 1024000 {
 		return fmt.Errorf("inproper buffer size, 512~1024000")
 	}
+	header = append(header, "User-Agent: "+ua)
+
 	config := &ctrl.Suo5Config{
-		Listen:        listen,
-		Target:        target,
-		NoAuth:        noAuth,
-		Username:      username,
-		Password:      password,
-		Mode:          mode,
-		UserAgent:     ua,
-		BufferSize:    bufSize,
-		Timeout:       timeout,
-		Debug:         debug,
-		UpstreamProxy: proxy,
-		Method:        method,
+		Listen:           listen,
+		Target:           target,
+		NoAuth:           noAuth,
+		Username:         username,
+		Password:         password,
+		Mode:             mode,
+		BufferSize:       bufSize,
+		Timeout:          timeout,
+		Debug:            debug,
+		UpstreamProxy:    proxy,
+		Method:           method,
+		RedirectURL:      redirect,
+		RawHeader:        header,
+		DisableHeartbeat: noHeartbeat,
+		DisableGzip:      noGzip,
+		TestExit:         testExit,
 	}
 	ctx, cancel := signalCtx()
 	defer cancel()

@@ -10,7 +10,6 @@ import (
 	"github.com/zema1/rawhttp"
 	"github.com/zema1/suo5/netrans"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"strconv"
@@ -20,29 +19,27 @@ import (
 type ConnectionType string
 
 const (
+	Undefined  ConnectionType = "undefined"
 	AutoDuplex ConnectionType = "auto"
 	FullDuplex ConnectionType = "full"
 	HalfDuplex ConnectionType = "half"
 )
 
 const (
-	ContentTypeChecking = "application/plain"
-	ContentTypeFull     = "application/octet-stream"
-	ContentTypeHalf     = "application/x-binary"
+	HeaderKey           = "Content-Type"
+	HeaderValueChecking = "application/plain"
+	HeaderValueFull     = "application/octet-stream"
+	HeaderValueHalf     = "application/x-binary"
 )
 
 type socks5Handler struct {
+	config          *Suo5Config
 	ctx             context.Context
-	method          string
-	target          string
 	normalClient    *http.Client
 	noTimeoutClient *http.Client
 	rawClient       *rawhttp.Client
-	bufSize         int
 	pool            *sync.Pool
 	selector        gosocks5.Selector
-	mode            ConnectionType
-	baseHeader      http.Header
 }
 
 func (m *socks5Handler) Handle(conn net.Conn) error {
@@ -71,24 +68,24 @@ func (m *socks5Handler) handleConnect(conn net.Conn, sockReq *gosocks5.Request) 
 	var err error
 	var resp *http.Response
 
-	dialData := buildBody(newActionCreate(id, sockReq.Addr.Host, sockReq.Addr.Port))
+	dialData := buildBody(newActionCreate(id, sockReq.Addr.Host, sockReq.Addr.Port, m.config.RedirectURL))
 	ch, chWR := netrans.NewChannelWriteCloser(m.ctx)
 	defer chWR.Close()
 
-	baseHeader := m.baseHeader.Clone()
+	baseHeader := m.config.Header.Clone()
 
-	if m.mode == FullDuplex {
+	if m.config.Mode == FullDuplex {
 		body := netrans.MultiReadCloser(
-			ioutil.NopCloser(bytes.NewReader(dialData)),
-			ioutil.NopCloser(netrans.NewChannelReader(ch)),
+			io.NopCloser(bytes.NewReader(dialData)),
+			io.NopCloser(netrans.NewChannelReader(ch)),
 		)
-		req, _ = http.NewRequestWithContext(m.ctx, m.method, m.target, body)
-		baseHeader.Set("Content-Type", ContentTypeFull)
+		req, _ = http.NewRequestWithContext(m.ctx, m.config.Method, m.config.Target, body)
+		baseHeader.Set(HeaderKey, HeaderValueFull)
 		req.Header = baseHeader
 		resp, err = m.rawClient.Do(req)
 	} else {
-		req, _ = http.NewRequestWithContext(m.ctx, m.method, m.target, bytes.NewReader(dialData))
-		baseHeader.Set("Content-Type", ContentTypeHalf)
+		req, _ = http.NewRequestWithContext(m.ctx, m.config.Method, m.config.Target, bytes.NewReader(dialData))
+		baseHeader.Set(HeaderKey, HeaderValueHalf)
 		req.Header = baseHeader
 		resp, err = m.noTimeoutClient.Do(req)
 	}
@@ -99,6 +96,17 @@ func (m *socks5Handler) handleConnect(conn net.Conn, sockReq *gosocks5.Request) 
 		return
 	}
 	defer resp.Body.Close()
+	// skip offset
+	if m.config.Offset > 0 {
+		log.Debugf("skipping offset %d", m.config.Offset)
+		_, err = io.CopyN(io.Discard, resp.Body, int64(m.config.Offset))
+		if err != nil {
+			log.Errorf("failed to skip offset, %s", err)
+			rep := gosocks5.NewReply(gosocks5.Failure, nil)
+			_ = rep.Write(conn)
+			return
+		}
+	}
 	fr, err := netrans.ReadFrame(resp.Body)
 	if err != nil {
 		log.Errorf("error read response frame, %+v, connection goes to shutdown", err)
@@ -117,7 +125,9 @@ func (m *socks5Handler) handleConnect(conn net.Conn, sockReq *gosocks5.Request) 
 	}
 	status := serverData["s"]
 	if len(status) != 1 || status[0] != 0x00 {
-		log.Errorf("connection refused to %s", sockReq.Addr)
+		if sockReq.Addr.Port != 0 {
+			log.Errorf("connection refused to %s", sockReq.Addr)
+		}
 		rep := gosocks5.NewReply(gosocks5.ConnRefused, nil)
 		_ = rep.Write(conn)
 		return
@@ -128,22 +138,28 @@ func (m *socks5Handler) handleConnect(conn net.Conn, sockReq *gosocks5.Request) 
 		log.Errorf("write data failed, %w", err)
 		return
 	}
-	log.Infof("conn successfully connected to %s", sockReq.Addr)
+	log.Infof("successfully connected to %s", sockReq.Addr)
 
-	var streamRW io.ReadWriter
-	if m.mode == FullDuplex {
+	var streamRW io.ReadWriteCloser
+	if m.config.Mode == FullDuplex {
 		streamRW = NewFullChunkedReadWriter(id, chWR, resp.Body)
 	} else {
-		streamRW = NewHalfChunkedReadWriter(m.ctx, id, m.normalClient, m.method, m.target, resp.Body, baseHeader)
+		streamRW = NewHalfChunkedReadWriter(m.ctx, id, m.normalClient, m.config.Method, m.config.Target,
+			resp.Body, baseHeader, m.config.RedirectURL)
 	}
-	defer streamRW.(io.Closer).Close()
+
+	if !m.config.DisableHeartbeat {
+		streamRW = NewHeartbeatRW(streamRW.(RawReadWriteCloser), id, m.config.RedirectURL)
+	}
+
+	defer streamRW.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if err := m.pipe(conn, streamRW); err != nil {
-			log.Debugf("local conn closed")
+			log.Debugf("local conn closed, %s", sockReq.Addr)
 			_ = streamRW.(io.Closer).Close()
 		}
 	}()
@@ -151,12 +167,13 @@ func (m *socks5Handler) handleConnect(conn net.Conn, sockReq *gosocks5.Request) 
 	go func() {
 		defer wg.Done()
 		if err := m.pipe(streamRW, conn); err != nil {
-			log.Debugf("remote readwriter closed")
+			log.Debugf("remote readwriter closed, %s", sockReq.Addr)
 			_ = conn.Close()
 		}
 	}()
+
 	wg.Wait()
-	log.Infof("connection from %s closed", conn.RemoteAddr())
+	log.Infof("connection closed, %s", sockReq.Addr)
 }
 
 func (m *socks5Handler) pipe(r io.Reader, w io.Writer) error {
@@ -179,33 +196,52 @@ func buildBody(m map[string][]byte) []byte {
 }
 
 const (
-	ActionCreate byte = 0x00
-	ActionData   byte = 0x01
-	ActionDelete byte = 0x02
-	ActionResp   byte = 0x03
+	ActionCreate    byte = 0x00
+	ActionData      byte = 0x01
+	ActionDelete    byte = 0x02
+	ActionHeartbeat byte = 0x03
 )
 
-func newActionCreate(id, addr string, port uint16) map[string][]byte {
+func newActionCreate(id, addr string, port uint16, redirect string) map[string][]byte {
 	m := make(map[string][]byte)
 	m["ac"] = []byte{ActionCreate}
 	m["id"] = []byte(id)
 	m["h"] = []byte(addr)
 	m["p"] = []byte(strconv.Itoa(int(port)))
+	if len(redirect) != 0 {
+		m["r"] = []byte(redirect)
+	}
 	return m
 }
 
-func newActionData(id string, data []byte) map[string][]byte {
+func newActionData(id string, data []byte, redirect string) map[string][]byte {
 	m := make(map[string][]byte)
 	m["ac"] = []byte{ActionData}
 	m["id"] = []byte(id)
 	m["dt"] = []byte(data)
+	if len(redirect) != 0 {
+		m["r"] = []byte(redirect)
+	}
 	return m
 }
 
-func newDelete(id string) map[string][]byte {
+func newDelete(id string, redirect string) map[string][]byte {
 	m := make(map[string][]byte)
 	m["ac"] = []byte{ActionDelete}
 	m["id"] = []byte(id)
+	if len(redirect) != 0 {
+		m["r"] = []byte(redirect)
+	}
+	return m
+}
+
+func newHeartbeat(id string, redirect string) map[string][]byte {
+	m := make(map[string][]byte)
+	m["ac"] = []byte{ActionHeartbeat}
+	m["id"] = []byte(id)
+	if len(redirect) != 0 {
+		m["r"] = []byte(redirect)
+	}
 	return m
 }
 

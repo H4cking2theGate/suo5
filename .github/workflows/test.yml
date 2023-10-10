@@ -1,22 +1,336 @@
 name: Run go tests
 on:
   push:
-    branches:
-      - main
-  pull_request:
 permissions:
   contents: read
 jobs:
-  test:
-    name: test
+  go-test:
+    name: Go Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v4
         with:
-          go-version: 1.19
-          cache: true
+          go-version: '1.20'
       - run: go mod download
       - run: go test $(go list ./... | grep -v /gui/ | grep -v /tests/)
+
+  build-binary:
+    name: Build Test Binary
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+      - run: go build -trimpath -ldflags "-w -s -extldflags '-static'" -o suo5
+      - uses: actions/upload-artifact@v3
+        with:
+          name: test-target
+          path: suo5
+
+  resin-test:
+    name: Resin
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: expertsystems/resin
+            mount: /var/resin/webapps/ROOT/assets
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:8080/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:8080/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+      - run: |
+          set -ex
+          docker run -it --rm -d -p8080:8080 -v ${{ github.workspace }}/assets:${{ matrix.mount }} ${{ matrix.image }}
+          bash ./.github/workflows/ready.sh ${{ env.SUO5_JSP_URL }} 30
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half
+
+  jetty-test:
+    name: Jetty
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - jetty:9.4.30-jdk8
+          - jetty:9.4.30-jdk11
+          - jetty:9.4-jdk8
+          - jetty:9.4-jdk11
+          - jetty:9.4-jdk17
+          - jetty:10.0.1-jdk11
+          - jetty:10.0-jdk11
+          - jetty:10.0-jdk17
+          - jetty:11.0.1-jdk11
+          - jetty:11.0-jdk11
+          - jetty:11.0-jdk17
+        mount:
+          - /var/lib/jetty/webapps/ROOT/assets
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:8080/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:8080/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+      - run: |
+          set -ex
+          docker run -it --rm -d -p8080:8080 -v ${{ github.workspace }}/assets:${{ matrix.mount }} ${{ matrix.image }}
+          bash ./.github/workflows/ready.sh ${{ env.SUO5_JSP_URL }} 30
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half 
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half 
+
+  jboss-test:
+    name: JBoss
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: vulhub/jboss:as-4.0.5
+            mount: /opt/jboss/jboss4/server/default/deploy/jbossweb-tomcat55.sar/ROOT.war/assets
+          - image: vulhub/jboss:as-6.1.0
+            mount: /jboss-6.1.0.Final/server/default/deploy/ROOT.war/assets
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:8080/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:8080/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+      - run: |
+          set -ex
+          docker run -it --rm -d -p8080:8080 -v ${{ github.workspace }}/assets:${{ matrix.mount }} ${{ matrix.image }}
+          bash ./.github/workflows/ready.sh ${{ env.SUO5_JSP_URL }} 30
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half
+
+  websphere-test:
+    name: WebSphere
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - websphere-liberty:23.0.0.3-full-java8-ibmjava
+          - websphere-liberty:23.0.0.4-full-java11-openj9
+          - websphere-liberty:22.0.0.9-full-java11-openj9
+          - websphere-liberty:22.0.0.12-full-java17-openj9
+        deploy:
+          - /config/dropins
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:9080/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:9080/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+        with:
+          jar: true
+      - run: |
+          set -ex
+          docker run -it --rm -d -p9080:9080 --name webshpere-test \
+            -v ${{ github.workspace }}/assets:${{ matrix.deploy }} \
+            ${{ matrix.image }}
+          docker ps -a
+          bash ./.github/workflows/ready.sh http://127.0.0.1:9080 60
+          sleep 10
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half
+
+  tongweb-test:
+    name: TongWeb
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: boyingking/tongweb-auto
+            deploy: /home/tw6/tongweb6/applications/console/assets
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:9060/console/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:9060/console/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+        with:
+          jar: true
+      - run: |
+          set -ex
+          docker run -it --rm -d -p9060:9060 --name tongweb-test \
+            -v ${{ github.workspace }}/assets:${{ matrix.deploy }} \
+            ${{ matrix.image }}
+          docker ps -a
+          bash ./.github/workflows/ready.sh http://127.0.0.1:9060 30
+          sleep 10
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -no-gzip
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full -no-gzip
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half -no-gzip
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -no-gzip
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full -no-gzip
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half -no-gzip
+  
+
+  weblogic-test:
+    name: Weblogic
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - container-registry.oracle.com/middleware/weblogic:12.2.1.3
+          - container-registry.oracle.com/middleware/weblogic:12.2.1.3-ol8-210214
+          - container-registry.oracle.com/middleware/weblogic:12.2.1.4
+          - container-registry.oracle.com/middleware/weblogic:12.2.1.4-ol8-210214
+          - container-registry.oracle.com/middleware/weblogic:14.1.1.0-11
+          - container-registry.oracle.com/middleware/weblogic:14.1.1.0-11-ol8
+        deploy:
+          - /u01/oracle/user_projects/domains/base_domain/autodeploy/
+        include:
+          - image: vulhub/weblogic:10.3.6.0-2017
+            deploy: /root/Oracle/Middleware/user_projects/domains/base_domain/autodeploy/
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:7001/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:7001/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+        with:
+          jar: true
+      - run: |
+          echo ${password} | docker login -u ${username} --password-stdin container-registry.oracle.com
+        env:
+          username: ${{ secrets.OCR_USERNAME }}
+          password: ${{ secrets.OCR_PASSWORD }}
+      - run: |
+          set -ex
+          mkdir properties
+          printf "username=weblogic\npassword=weblogic123\n" > ./properties/domain.properties
+          docker run -it --rm -d -p7001:7001 --name weblogic-test \
+            -e PRODUCTION_MODE=dev \
+            -v ${{ github.workspace }}/properties:/u01/oracle/properties \
+            ${{ matrix.image }}
+          docker ps -a
+          bash ./.github/workflows/ready.sh http://127.0.0.1:7001 60
+          docker cp ./assets/assets.war weblogic-test:${{ matrix.deploy }}
+          sleep 10
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half
+
+  tomcat-test:
+    name: Tomcat
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - andreptb/tomcat:6.0.45-jdk6
+          - andreptb/tomcat:6.0.48-jdk6
+          - andreptb/tomcat:6.0.44-jdk7
+          - andreptb/tomcat:7.0.64-jdk7
+          - andreptb/tomcat:7.0.64-jdk8
+          - andreptb/tomcat:8.0.26-jdk7
+          - andreptb/tomcat:9.0.10
+          - tomcat:6.0.41-jre7
+          - tomcat:6.0-jre7
+          - tomcat:6.0-jre8
+          - tomcat:7.0.56-jre7
+          - tomcat:7.0-jre7
+          - tomcat:7.0-jre8
+          - tomcat:8.0.14-jre7
+          - tomcat:8.0-jre7
+          - tomcat:8.0-jre8
+          - tomcat:8.5.0-jre8
+          - tomcat:8.5.0-jre8
+          - tomcat:8.5-jre8
+          - tomcat:8.5-jre11
+          - tomcat:8.5-jre17
+          - tomcat:9.0.1-jre8
+          - tomcat:9.0-jre8
+          - tomcat:9.0-jre11
+          - tomcat:9.0-jre17
+          - tomcat:10.0.0-jdk8
+          - tomcat:10.0-jre8
+          - tomcat:10.0-jre11
+          - tomcat:10.0-jre17
+          - tomcat:10.1.0-jre11
+          - tomcat:10.1-jre11
+          - tomcat:10.1-jre17
+        mount:
+          - /usr/local/tomcat/webapps/ROOT/assets
+        jspx:
+          - true
+        include:
+          - image: nortthon/tomcat5
+            mount: /opt/tomcat/webapps/ROOT/assets
+            jspx: true
+          - image: consol/tomcat-4.1
+            mount: /opt/tomcat/webapps/ROOT/assets
+            jspx: false
+    env:
+      SUO5_JSP_URL: http://127.0.0.1:8080/assets/suo5.jsp
+      SUO5_JSPX_URL: http://127.0.0.1:8080/assets/suo5.jspx
+    steps:
+      - uses: actions/checkout@v3
+      - uses: ./.github/actions
+      - run: |
+          set -ex
+          docker run -it --rm -d -p8080:8080 -v ${{ github.workspace }}/assets:${{ matrix.mount }} ${{ matrix.image }}
+          bash ./.github/workflows/ready.sh ${{ env.SUO5_JSP_URL }} 30
+          curl -v ${{ env.SUO5_JSP_URL }}
+          chmod +x ./suo5
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode full
+          ./suo5 -debug -t ${{ env.SUO5_JSP_URL }} -T https://www.bing.com -mode half
+          if [ "${{ matrix.jspx }}" = "true" ]; then
+            ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com
+            ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode full
+            ./suo5 -debug -t ${{ env.SUO5_JSPX_URL }} -T https://www.bing.com -mode half
+          fi
