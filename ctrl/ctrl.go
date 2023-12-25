@@ -4,6 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"math/rand"
+	"net"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/go-gost/gosocks5"
 	"github.com/go-gost/gosocks5/client"
 	"github.com/go-gost/gosocks5/server"
@@ -13,16 +25,6 @@ import (
 	utls "github.com/refraction-networking/utls"
 	"github.com/zema1/rawhttp"
 	"github.com/zema1/suo5/netrans"
-	"io"
-	"math/rand"
-	"net"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"os"
-	"strings"
-	"sync"
-	"time"
 )
 
 func Run(ctx context.Context, config *Suo5Config) error {
@@ -81,12 +83,19 @@ func Run(ctx context.Context, config *Suo5Config) error {
 		}
 		log.Infof("using redirect url %v", config.RedirectURL)
 	}
+	var jar http.CookieJar
+	if config.EnableCookiejar {
+		jar, _ = cookiejar.New(nil)
+	}
+
 	noTimeoutClient := &http.Client{
 		Transport: tr.Clone(),
+		Jar:       jar,
 		Timeout:   0,
 	}
 	normalClient := &http.Client{
 		Timeout:   time.Duration(config.Timeout) * time.Second,
+		Jar:       jar,
 		Transport: tr.Clone(),
 	}
 	rawClient := newRawClient(config.UpstreamProxy, 0)
@@ -176,7 +185,7 @@ func Run(ctx context.Context, config *Suo5Config) error {
 		})
 	}()
 	log.Infof("creating a test connection to the remote target")
-	ok := testTunnel(config.Listen, config.Username, config.Password, time.Second*2)
+	ok := testTunnel(config.Listen, config.Username, config.Password, time.Second*10)
 	time.Sleep(time.Millisecond * 500)
 	if !ok {
 		if !config.DisableGzip {
@@ -203,7 +212,11 @@ func Run(ctx context.Context, config *Suo5Config) error {
 func checkConnectMode(method string, target string, baseHeader http.Header, proxy string) (ConnectionType, int, error) {
 	// 这里的 client 需要定义 timeout，不要用外面没有 timeout 的 rawCient
 	rawClient := newRawClient(proxy, time.Second*5)
-	data := RandString(32)
+	randLen := rand.Intn(1024)
+	if randLen <= 32 {
+		randLen += 32
+	}
+	data := RandString(randLen)
 	ch := make(chan []byte, 1)
 	ch <- []byte(data)
 	req, err := http.NewRequest(method, target, netrans.NewChannelReader(ch))
@@ -233,7 +246,7 @@ func checkConnectMode(method string, target string, baseHeader http.Header, prox
 	}
 	duration := time.Since(now).Milliseconds()
 
-	offset := strings.Index(string(body), data)
+	offset := strings.Index(string(body), data[:32])
 	if offset == -1 {
 		header, _ := httputil.DumpResponse(resp, false)
 		log.Errorf("response are as follows:\n%s", string(header)+string(body))
